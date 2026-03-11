@@ -13,6 +13,7 @@ class AppSettings:
     mp3_bitrate_kbps: int = 320
     default_album_artist: str = "Openings and Endings"
     default_genre: str = "Anime"
+    debug: bool = False
 
 
 def _settings_path() -> Path:
@@ -37,6 +38,9 @@ def load_settings() -> AppSettings:
                 filtered["mp3_bitrate_kbps"] = int(filtered["mp3_bitrate_kbps"])
             except Exception:
                 filtered.pop("mp3_bitrate_kbps", None)
+
+        if "debug" in filtered:
+            filtered["debug"] = bool(filtered["debug"])
 
         return AppSettings(**filtered)
     except Exception:

@@ -3,7 +3,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 from mutagen.id3 import ID3, TALB, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
 from mutagen.mp3 import MP3
@@ -98,7 +98,13 @@ def ffmpeg_extract_mp3(video_path: Path, mp3_path: Path, bitrate_kbps: int) -> N
         f"{bitrate_kbps}k",
         str(mp3_path),
     ]
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    p = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     if p.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {p.stderr.strip() or p.stdout.strip()}")
 
@@ -134,11 +140,31 @@ def write_id3_tags(mp3_path: Path, tags: ID3Tags) -> None:
 ProgressCb = Callable[[float, str], None]
 
 
+class _YdlLogger:
+    def __init__(self, log_cb: Optional[Callable[[str], None]]):
+        self._log_cb = log_cb
+
+    def debug(self, msg):
+        return
+
+    def info(self, msg):
+        return
+
+    def warning(self, msg):
+        if self._log_cb:
+            self._log_cb(f"yt-dlp warning: {msg}")
+
+    def error(self, msg):
+        if self._log_cb:
+            self._log_cb(f"yt-dlp error: {msg}")
+
+
 def download_best_video(
     youtube_url: str,
     settings: AppSettings,
     progress_cb: Optional[ProgressCb] = None,
-) -> Path:
+    log_cb: Optional[Callable[[str], None]] = None,
+) -> Tuple[Path, str]:
     ensure_dir(settings.download_dir)
     outtmpl = str(Path(settings.download_dir) / "%(title)s [%(id)s].%(ext)s")
 
@@ -163,18 +189,22 @@ def download_best_video(
         "noplaylist": True,
         "quiet": True,
         "ffmpeg_location": _resolve_ffmpeg_location() or None,
+        "logger": _YdlLogger(log_cb),
         "progress_hooks": [hook],
     }
 
     with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(youtube_url, download=True)
         fp = ydl.prepare_filename(info)
+        title = ""
+        if isinstance(info, dict):
+            title = str(info.get("title") or "").strip()
         p = Path(fp)
         if p.suffix.lower() != ".mp4":
             mp4 = p.with_suffix(".mp4")
             if mp4.exists():
-                return mp4
-        return p
+                return mp4, title
+        return p, title
 
 
 def download_url_to_mp3(
@@ -195,10 +225,15 @@ def download_url_to_mp3(
     stage_cb("Downloading")
     log_cb(f"Downloading from: {youtube_url}")
 
-    video_path = download_best_video(youtube_url, settings, progress_cb=progress_cb)
+    video_path, yt_title = download_best_video(
+        youtube_url,
+        settings,
+        progress_cb=progress_cb,
+        log_cb=log_cb,
+    )
     log_cb(f"Downloaded: {video_path}")
 
-    out_name = safe_filename(tags.song.strip() or display_name)
+    out_name = safe_filename(tags.song.strip() or yt_title or display_name)
     mp3_path = Path(settings.mp3_dir) / f"{out_name}.mp3"
 
     stage_cb("Extracting MP3")

@@ -40,4 +40,5 @@ python opeddl.py
 ## Notes / Limitations
 
 - TVDB integration is limited to showing a TVDB search link.
+- yt-dlp may warn about missing a supported JavaScript runtime for YouTube extraction. Installing a runtime like Node.js (LTS) or Deno can improve reliability.
 - ID3 tags are applied as-entered to every downloaded file. The app does not auto-populate tags (except default Album Artist and Genre).
