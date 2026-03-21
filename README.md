@@ -1,44 +1,62 @@
 # oped-dl
 
-Simple GUI tool to scrape opening/ending themes from a MyAnimeList anime page and download them from YouTube as MP3.
+A simple Python GUI tool to scrape opening and ending themes from a MyAnimeList (MAL) page and download them from YouTube as high-quality MP3s.
+
+## Features
+
+- Scrapes song titles and artists directly from MyAnimeList.
+- Searches for and downloads audio using `yt-dlp`.
+- Automatically applies ID3 tags (Artist, Album, Genre) using `mutagen`.
+- Integrated GUI for managing downloads and settings.
 
 ## Requirements
 
-- Python 3.10+
-- `ffmpeg` either:
-  - Installed and available on your PATH, or
-  - Placed as `ffmpeg.exe` next to `opeddl.py` (or `bin/ffmpeg.exe`)
+- **Python 3.10+**
+- **FFmpeg**: Must be available on your system `PATH` or placed in a `/bin` folder in the project root.
+  - *Note: Binaries are ignored by Git and must be added manually.*
+- **JavaScript Runtime (Optional)**: Installing Node.js (LTS) or Deno can improve `yt-dlp` reliability for YouTube extraction.
 
-## Install
+## Installation
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.txt
-```
+1. **Clone the repository**:
+   ```powershell
+   git clone https://github.com/your-repo/oped-dl
+   cd oped-dl
+   ```
 
-## Run
+2. **Create a virtual environment**:
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\activate
+   ```
 
-```powershell
-python opeddl.py
-```
+3. **Install dependencies**:
+   ```powershell
+   pip install -r requirements.txt
+   ```
 
 ## Usage
 
-1. Open **App -> Settings**
-2. Set:
-   - Download folder (temporary video location)
-   - MP3 output folder
-   - MP3 bitrate
-3. Paste a `https://myanimelist.net/anime/...` URL
-4. Click **Fetch OP/ED**
-5. Click **Start**
-6. For each song:
-   - Confirm or edit the YouTube URL
-   - Click **Use URL + Download** (or **Skip**)
+1. **Start the app**:
+   ```powershell
+   python opeddl.py
+   ```
 
-## Notes / Limitations
+2. **Configure folders**: Go to `App -> Settings` to set your Temporary Video and Final MP3 output folders.
 
-- TVDB integration is limited to showing a TVDB search link.
-- yt-dlp may warn about missing a supported JavaScript runtime for YouTube extraction. Installing a runtime like Node.js (LTS) or Deno can improve reliability.
-- ID3 tags are applied as-entered to every downloaded file. The app does not auto-populate tags (except default Album Artist and Genre).
+3. **Fetch music**: Paste a MyAnimeList URL (e.g., `https://myanimelist.net/anime/...`) and click **Fetch OP/ED**.
+
+4. **Download**: Select an OP/ED item, click **Search YouTube** to find a URL, then click **Download**.
+
+## Dependencies
+
+- `requests`: HTTP requests
+- `beautifulsoup4`: HTML parsing
+- `yt-dlp`: YouTube downloading
+- `mutagen`: ID3 tagging
+
+## Notes
+
+- TVDB integration is limited to a search link.
+- ID3 tags are applied as entered in the UI.
+- Network dependency on MyAnimeList and YouTube availability.
