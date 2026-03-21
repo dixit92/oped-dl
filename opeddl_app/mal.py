@@ -137,12 +137,20 @@ def _jikan_get_json(path: str, timeout_s: int, log_cb: Optional[LogCb]) -> dict:
     raise RuntimeError(f"Jikan request failed: {last_exc}")
 
 
-def _jikan_title_and_themes(anime_id: int, timeout_s: int, log_cb: Optional[LogCb]) -> Tuple[str, List[str], List[str]]:
+def _jikan_title_and_themes(anime_id: int, timeout_s: int, log_cb: Optional[LogCb]) -> Tuple[str, List[str], List[str], Optional[str]]:
     a = _jikan_get_json(f"/anime/{anime_id}", timeout_s=timeout_s, log_cb=log_cb)
     title = ""
+    year = None
     data = a.get("data") if isinstance(a, dict) else None
     if isinstance(data, dict):
         title = str(data.get("title") or "").strip()
+        aired = data.get("aired")
+        if isinstance(aired, dict):
+            from_iso = aired.get("from")
+            if from_iso and isinstance(from_iso, str) and len(from_iso) >= 4:
+                year = from_iso[:4]
+
+    year = _find_first_season_year(anime_id, timeout_s, log_cb, year)
 
     t = _jikan_get_json(f"/anime/{anime_id}/themes", timeout_s=timeout_s, log_cb=log_cb)
     td = t.get("data") if isinstance(t, dict) else None
@@ -160,8 +168,56 @@ def _jikan_title_and_themes(anime_id: int, timeout_s: int, log_cb: Optional[LogC
         log_cb(f"Debug: Jikan title '{title}'")
         log_cb(f"Debug: Jikan openings {len(openings)}")
         log_cb(f"Debug: Jikan endings {len(endings)}")
+        if year:
+            log_cb(f"Debug: First season year: {year}")
 
-    return title, openings, endings
+    return title, openings, endings, year
+
+
+def _find_first_season_year(anime_id: int, timeout_s: int, log_cb: Optional[LogCb], current_year: Optional[str]) -> Optional[str]:
+    visited = set()
+    current_id = anime_id
+
+    while current_id not in visited:
+        visited.add(current_id)
+
+        r = _jikan_get_json(f"/anime/{current_id}/relations", timeout_s=timeout_s, log_cb=log_cb)
+        relations = r.get("data") if isinstance(r, dict) else None
+
+        prequel_id = None
+        if isinstance(relations, list):
+            for rel in relations:
+                rel_dict = rel if isinstance(rel, dict) else {}
+                rel_type = rel_dict.get("relation")
+                if rel_type and "prequel" in rel_type.lower():
+                    entries = rel_dict.get("entry")
+                    if isinstance(entries, list) and entries:
+                        first_entry = entries[0]
+                        if isinstance(first_entry, dict):
+                            mal_url = first_entry.get("url") or ""
+                            prequel_id = _extract_mal_anime_id(mal_url)
+                            if prequel_id:
+                                if log_cb:
+                                    prequel_title = first_entry.get("name", "")
+                                    log_cb(f"Debug: Found prequel: {prequel_title} (id {prequel_id})")
+                                break
+
+        if prequel_id:
+            a = _jikan_get_json(f"/anime/{prequel_id}", timeout_s=timeout_s, log_cb=log_cb)
+            data = a.get("data") if isinstance(a, dict) else None
+            if isinstance(data, dict):
+                aired = data.get("aired")
+                if isinstance(aired, dict):
+                    from_iso = aired.get("from")
+                    if from_iso and isinstance(from_iso, str) and len(from_iso) >= 4:
+                        current_year = from_iso[:4]
+                        if log_cb:
+                            log_cb(f"Debug: Prequel year: {current_year}")
+            current_id = prequel_id
+        else:
+            break
+
+    return current_year
 
 
 def _html_title_and_themes(mal_url: str, timeout_s: int, log_cb: Optional[LogCb]) -> Tuple[str, List[str], List[str]]:
@@ -217,7 +273,7 @@ def scrape_mal_title_and_themes(
     mal_url: str,
     timeout_s: int = 20,
     log_cb: Optional[LogCb] = None,
-) -> Tuple[str, List[str], List[str]]:
+) -> Tuple[str, List[str], List[str], Optional[str]]:
     anime_id = _extract_mal_anime_id(mal_url)
     if anime_id:
         if log_cb:
@@ -228,7 +284,8 @@ def scrape_mal_title_and_themes(
             if log_cb:
                 log_cb(f"Debug: Jikan failed, falling back to HTML: {e}")
 
-    return _html_title_and_themes(mal_url, timeout_s=timeout_s, log_cb=log_cb)
+    title, openings, endings = _html_title_and_themes(mal_url, timeout_s=timeout_s, log_cb=log_cb)
+    return title, openings, endings, None
 
 
 def tvdb_search_url(query: str) -> str:

@@ -169,7 +169,7 @@ class App(tk.Tk):
         mid.add(left, weight=2)
         mid.add(right, weight=3)
 
-        frm_queue = ttk.LabelFrame(left, text="Queue")
+        frm_queue = ttk.LabelFrame(left, text="OP/ED")
         frm_queue.pack(fill="both", expand=True)
 
         self.queue_list = tk.Listbox(frm_queue, height=20)
@@ -223,6 +223,7 @@ class App(tk.Tk):
             ent = ttk.Entry(parent, width=45)
             ent.grid(row=row, column=1, sticky="we", padx=8, pady=4)
             ent.configure(textvariable=var)
+            ent.bind("<FocusIn>", self._on_tag_field_focus)
             return ent
 
         parent.columnconfigure(1, weight=1)
@@ -236,7 +237,11 @@ class App(tk.Tk):
         add_row(6, "Track", self.tag_track)
         add_row(7, "Disk", self.tag_disk)
 
-    def _save_current_metadata(self) -> None:
+    def _on_tag_field_focus(self, event=None) -> None:
+        if self._current_queue_index is not None and self.queue_list.size() > 0:
+            if not self.queue_list.curselection():
+                self.queue_list.selection_set(self._current_queue_index)
+                self.queue_list.see(self._current_queue_index)
         if self._current_queue_index is not None:
             self._queue_metadata[self._current_queue_index] = self._snapshot_tags()
 
@@ -274,17 +279,24 @@ class App(tk.Tk):
     def _search_current_item(self) -> None:
         selection = self.queue_list.curselection()
         if not selection:
-            mb.showinfo("Select Item", "Please select a song from the queue first")
-            return
+            if self.queue_list.size() > 0:
+                self.queue_list.selection_set(0)
+                self.queue_list.see(0)
+                self._on_queue_select()
+            else:
+                mb.showinfo("No Items", "No OP/ED items in the list")
+                return
         idx = selection[0]
         song_text = self.queue_list.get(idx)
         song = song_text.split(":", 1)[-1].strip() if ":" in song_text else song_text.strip()
+        tags = self._queue_metadata.get(idx)
+        anime_title = tags.album if tags else ""
         self._set_status(f"Searching YouTube: {song}")
         self._log(f"Searching: {song}")
 
         def run():
             try:
-                url = yt_search_first(song)
+                url = yt_search_first(song, anime_title=anime_title)
                 self.worker_to_ui.put(("search_result", (idx, song, url)))
             except Exception as e:
                 self.worker_to_ui.put(("error", f"Search failed: {e}"))
@@ -294,8 +306,13 @@ class App(tk.Tk):
     def _download_current_item(self) -> None:
         selection = self.queue_list.curselection()
         if not selection:
-            mb.showinfo("Select Item", "Please select a song from the queue first")
-            return
+            if self.queue_list.size() > 0:
+                self.queue_list.selection_set(0)
+                self.queue_list.see(0)
+                self._on_queue_select()
+            else:
+                mb.showinfo("No Items", "No OP/ED items in the list")
+                return
         idx = selection[0]
         url = self.song_url_var.get().strip()
         if not url:
@@ -413,14 +430,14 @@ class App(tk.Tk):
                     if debug:
                         self.worker_to_ui.put(("log", m))
 
-                title, openings, endings = scrape_mal_title_and_themes(url, timeout_s=20, log_cb=mal_log if debug else None)
+                title, openings, endings, year = scrape_mal_title_and_themes(url, timeout_s=20, log_cb=mal_log if debug else None)
                 dt_ms = int((time.perf_counter() - t0) * 1000)
                 if debug:
                     self.worker_to_ui.put(("log", f"Debug: MAL scrape finished in {dt_ms}ms"))
                     self.worker_to_ui.put(("log", f"Debug: Title: {title}"))
                     self.worker_to_ui.put(("log", f"Debug: Openings: {len(openings)}"))
                     self.worker_to_ui.put(("log", f"Debug: Endings: {len(endings)}"))
-                self.worker_to_ui.put(("themes_loaded", (title, openings, endings)))
+                self.worker_to_ui.put(("themes_loaded", (title, openings, endings, year)))
             except Exception as e:
                 self.worker_to_ui.put(("error", f"Scrape failed: {e}"))
             finally:
@@ -531,7 +548,7 @@ class App(tk.Tk):
             while True:
                 kind, payload = self.worker_to_ui.get_nowait()
                 if kind == "themes_loaded":
-                    title, openings, endings = payload
+                    title, openings, endings, year = payload
                     self.tvdb_url_var.set(tvdb_search_url(title))
                     self.queue_list.delete(0, "end")
                     self._queue_metadata.clear()
@@ -543,6 +560,7 @@ class App(tk.Tk):
                             album=title,
                             album_artist=self.settings.default_album_artist or "Openings and Endings",
                             genre=self.settings.default_genre or "Anime",
+                            year=year or "",
                         )
                     for i, s in enumerate(endings, start=len(openings)):
                         self.queue_list.insert("end", f"ED: {s}")
@@ -551,6 +569,7 @@ class App(tk.Tk):
                             album=title,
                             album_artist=self.settings.default_album_artist or "Openings and Endings",
                             genre=self.settings.default_genre or "Anime",
+                            year=year or "",
                         )
                     self._set_status(f"Loaded {len(openings)} OP and {len(endings)} ED")
                 elif kind == "search_result":

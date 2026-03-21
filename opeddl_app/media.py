@@ -30,7 +30,18 @@ def safe_filename(name: str) -> str:
     return name
 
 
-def yt_search_first(query: str) -> Optional[str]:
+def yt_search_first(query: str, anime_title: str = "") -> Optional[str]:
+    import re
+
+    clean_query = query
+    clean_query = re.sub(r"\s*\(eps?\s*\d+(?:,\s*\d+)*\)\s*", "", clean_query, flags=re.IGNORECASE)
+    clean_query = clean_query.strip()
+
+    if anime_title:
+        search_str = f"{anime_title} {clean_query}"
+    else:
+        search_str = clean_query
+
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
@@ -38,7 +49,7 @@ def yt_search_first(query: str) -> Optional[str]:
         "noplaylist": True,
     }
     with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+        info = ydl.extract_info(f"ytsearch1:{search_str}", download=False)
         entries = info.get("entries") if isinstance(info, dict) else None
         if not entries:
             return None
