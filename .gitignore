@@ -1,0 +1,2 @@
+# Ignore ffmpeg and other binaries
+bin/
