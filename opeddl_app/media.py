@@ -34,7 +34,15 @@ def yt_search_first(query: str, anime_title: str = "") -> Optional[str]:
     import re
 
     clean_query = query
+
     clean_query = re.sub(r"\s*\(eps?\s*\d+(?:,\s*\d+)*\)\s*", "", clean_query, flags=re.IGNORECASE)
+
+    jp_match = re.search(r"^(.+?)\s*\(Japanese\)\s*$", clean_query, re.IGNORECASE)
+    if jp_match:
+        clean_query = jp_match.group(1).strip()
+    else:
+        clean_query = re.sub(r"\s*\([^)]+\)\s*$", "", clean_query).strip()
+
     clean_query = clean_query.strip()
 
     if anime_title:

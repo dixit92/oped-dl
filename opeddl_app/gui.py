@@ -269,7 +269,10 @@ class App(tk.Tk):
         new_idx = selection[0]
         if new_idx == self._current_queue_index:
             return
-        self._save_current_metadata()
+        try:
+            self._save_current_metadata()
+        except AttributeError:
+            return
         self._current_queue_index = new_idx
         self._load_metadata_for_index(new_idx)
         song_text = self.queue_list.get(new_idx)
