@@ -3,7 +3,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from mutagen.id3 import ID3, TALB, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
 from mutagen.mp3 import MP3
@@ -30,25 +30,97 @@ def safe_filename(name: str) -> str:
     return name
 
 
-def yt_search_first(query: str, anime_title: str = "") -> Optional[str]:
-    import re
+def _extract_japanese_tokens(text: str) -> List[str]:
+    if not text:
+        return []
+    tokens = re.findall(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+", text)
+    out: List[str] = []
+    for t in tokens:
+        tt = t.strip()
+        if tt and tt not in out:
+            out.append(tt)
+    return out
 
-    clean_query = query
 
-    clean_query = re.sub(r"\s*\(eps?\s*\d+(?:,\s*\d+)*\)\s*", "", clean_query, flags=re.IGNORECASE)
+def _clean_mal_theme_query(query: str) -> Tuple[str, str, List[str]]:
+    q = (query or "").strip()
+    q = re.sub(r"^#\d+:\s*", "", q)
+    q = re.sub(r"\s*\(eps?\s*\d+(?:\s*[-,]\s*\d+)*\)\s*", " ", q, flags=re.IGNORECASE)
+    q = re.sub(r"\s+", " ", q).strip()
 
-    jp_match = re.search(r"^(.+?)\s*\(Japanese\)\s*$", clean_query, re.IGNORECASE)
-    if jp_match:
-        clean_query = jp_match.group(1).strip()
+    title = q
+    artist = ""
+
+    qm = re.search(r"[\"“](.+?)[\"”]", q)
+    if qm:
+        title = qm.group(1).strip()
+
+    bym = re.search(r"\bby\s+(.+)$", q, flags=re.IGNORECASE)
+    if bym:
+        artist = bym.group(1).strip()
+
+    # Prefer explicit Japanese variant when present in MAL text.
+    jp_variant = re.search(r"(.+?)\s*\(\s*Japanese\s*\)", title, flags=re.IGNORECASE)
+    if jp_variant:
+        title = jp_variant.group(1).strip()
     else:
-        clean_query = re.sub(r"\s*\([^)]+\)\s*$", "", clean_query).strip()
+        title = re.sub(r"\s*\([^)]+\)\s*$", "", title).strip()
 
-    clean_query = clean_query.strip()
+    artist = re.sub(r"\s*\([^)]+\)\s*$", "", artist).strip()
+    jp_tokens = _extract_japanese_tokens(q)
+    return title, artist, jp_tokens
 
-    if anime_title:
-        search_str = f"{anime_title} {clean_query}"
+
+def _entry_score(entry: dict, anime_title: str, jp_tokens: List[str], title: str, artist: str) -> int:
+    et = str(entry.get("title") or "")
+    uploader = str(entry.get("uploader") or "")
+    channel = str(entry.get("channel") or "")
+    hay = f"{et} {uploader} {channel}".lower()
+    score = 0
+
+    if "topic" in uploader.lower() or "topic" in channel.lower() or "topic" in et.lower():
+        score += 120
+
+    if anime_title and anime_title.lower() in hay:
+        score += 20
+
+    if title and title.lower() in hay:
+        score += 30
+
+    if artist and artist.lower() in hay:
+        score += 20
+
+    if jp_tokens:
+        jp_hits = 0
+        for t in jp_tokens:
+            if t and t in f"{et} {uploader} {channel}":
+                jp_hits += 1
+        score += jp_hits * 60
+
+    return score
+
+
+def yt_search_first(
+    query: str,
+    anime_title: str = "",
+    log_cb: Optional[Callable[[str], None]] = None,
+) -> Optional[str]:
+    title, artist, jp_tokens = _clean_mal_theme_query(query)
+    if jp_tokens:
+        primary = jp_tokens[0]
     else:
-        search_str = clean_query
+        primary = title or (query or "").strip()
+
+    parts = [anime_title.strip(), primary.strip(), artist.strip()]
+    search_str = " ".join(p for p in parts if p)
+    if not search_str:
+        return None
+
+    if log_cb:
+        log_cb(
+            f"Debug: YT search normalized query title='{title}' artist='{artist}' "
+            f"jp_tokens={jp_tokens} search='{search_str}'"
+        )
 
     ydl_opts = {
         "quiet": True,
@@ -57,20 +129,47 @@ def yt_search_first(query: str, anime_title: str = "") -> Optional[str]:
         "noplaylist": True,
     }
     with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(f"ytsearch1:{search_str}", download=False)
+        info = ydl.extract_info(f"ytsearch10:{search_str}", download=False)
         entries = info.get("entries") if isinstance(info, dict) else None
-        if not entries:
+        if not isinstance(entries, list) or not entries:
             return None
-        e0 = entries[0]
-        if not isinstance(e0, dict):
+
+        candidates = [e for e in entries if isinstance(e, dict)]
+        if not candidates:
             return None
-        vid = e0.get("id")
-        if not vid:
-            url = e0.get("url")
-            if url and str(url).startswith("http"):
-                return str(url)
-            return None
-        return f"https://www.youtube.com/watch?v={vid}"
+
+        ranked = []
+        for e in candidates:
+            score = _entry_score(e, anime_title, jp_tokens, title, artist)
+            ranked.append((score, e))
+
+        ranked.sort(key=lambda x: x[0], reverse=True)
+
+        if log_cb:
+            preview = ranked[:3]
+            for i, (score, e) in enumerate(preview, start=1):
+                e_title = str(e.get("title") or "")
+                e_channel = str(e.get("channel") or e.get("uploader") or "")
+                log_cb(f"Debug: YT candidate {i}: score={score} title='{e_title}' channel='{e_channel}'")
+
+        best = ranked[0][1]
+
+        vid = best.get("id")
+        if vid:
+            if log_cb:
+                b_title = str(best.get("title") or "")
+                b_channel = str(best.get("channel") or best.get("uploader") or "")
+                log_cb(f"Debug: YT selected video id={vid} title='{b_title}' channel='{b_channel}'")
+            return f"https://www.youtube.com/watch?v={vid}"
+
+        url = best.get("url")
+        if url and str(url).startswith("http"):
+            if log_cb:
+                b_title = str(best.get("title") or "")
+                b_channel = str(best.get("channel") or best.get("uploader") or "")
+                log_cb(f"Debug: YT selected url='{url}' title='{b_title}' channel='{b_channel}'")
+            return str(url)
+        return None
 
 
 def _resolve_ffmpeg_exe() -> str:

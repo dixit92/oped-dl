@@ -299,7 +299,13 @@ class App(tk.Tk):
 
         def run():
             try:
-                url = yt_search_first(song, anime_title=anime_title)
+                debug = bool(getattr(self.settings, "debug", False))
+
+                def yt_log(m: str) -> None:
+                    if debug:
+                        self.worker_to_ui.put(("log", m))
+
+                url = yt_search_first(song, anime_title=anime_title, log_cb=yt_log if debug else None)
                 self.worker_to_ui.put(("search_result", (idx, song, url)))
             except Exception as e:
                 self.worker_to_ui.put(("error", f"Search failed: {e}"))
@@ -646,7 +652,13 @@ class App(tk.Tk):
 
                 url = None
                 try:
-                    url = yt_search_first(song)
+                    debug = bool(getattr(self.settings, "debug", False))
+
+                    def yt_log(m: str) -> None:
+                        if debug:
+                            self.worker_to_ui.put(("log", m))
+
+                    url = yt_search_first(song, log_cb=yt_log if debug else None)
                 except Exception as e:
                     self.worker_to_ui.put(("log", f"Search failed for '{song}': {e}"))
 
