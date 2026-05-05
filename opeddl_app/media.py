@@ -30,6 +30,28 @@ def safe_filename(name: str) -> str:
     return name
 
 
+def _first_int_token(text: str) -> Optional[int]:
+    m = re.search(r"\d+", text or "")
+    if not m:
+        return None
+    try:
+        return int(m.group(0))
+    except Exception:
+        return None
+
+
+def _disc_track_prefix(tags: ID3Tags) -> str:
+    disc_n = _first_int_token(tags.disk)
+    track_n = _first_int_token(tags.track)
+
+    if disc_n is None and track_n is None:
+        return ""
+
+    disc_part = str(disc_n if disc_n is not None else 1)
+    track_part = f"{(track_n if track_n is not None else 1):02d}"
+    return f"{disc_part}-{track_part}"
+
+
 def _extract_japanese_tokens(text: str) -> List[str]:
     if not text:
         return []
@@ -351,7 +373,10 @@ def download_url_to_mp3(
     )
     log_cb(f"Downloaded: {video_path}")
 
-    out_name = safe_filename(tags.song.strip() or yt_title or display_name)
+    title_for_tag = (tags.song or "").strip() or (yt_title or "").strip() or display_name.strip() or "Track"
+    title_for_filename = safe_filename(title_for_tag)
+    prefix = _disc_track_prefix(tags)
+    out_name = f"{prefix} - {title_for_filename}" if prefix else title_for_filename
     mp3_path = Path(settings.mp3_dir) / f"{out_name}.mp3"
 
     stage_cb("Extracting MP3")
@@ -359,7 +384,19 @@ def download_url_to_mp3(
 
     stage_cb("Tagging")
     try:
-        write_id3_tags(mp3_path, tags)
+        write_id3_tags(
+            mp3_path,
+            ID3Tags(
+                song=title_for_tag,
+                artist=tags.artist,
+                album=tags.album,
+                album_artist=tags.album_artist,
+                genre=tags.genre,
+                year=tags.year,
+                track=tags.track,
+                disk=tags.disk,
+            ),
+        )
     except Exception as e:
         log_cb(f"ID3 tagging failed (file is still valid MP3): {e}")
 
