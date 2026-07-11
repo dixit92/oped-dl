@@ -1,18 +1,81 @@
 import re
-import time
 from typing import Callable, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
 
 
-def parse_mal_themes_from_soup(soup: BeautifulSoup) -> Tuple[List[str], List[str]]:
+def _dedupe(xs: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for x in xs:
+        k = x.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(x)
+    return out
+
+
+def _parse_theme_section(soup: BeautifulSoup, css_class: str) -> List[str]:
+    results: List[str] = []
+    div = soup.select_one(f"div.theme-songs.{css_class}")
+    if not div:
+        return results
+    for popup in div.select("div.oped-popup"):
+        popup.decompose()
+    for script in div.find_all("script"):
+        script.decompose()
+    for row in div.select("tr"):
+        artist_span = row.select_one("span.theme-song-artist")
+        artist = ""
+        if artist_span:
+            artist = artist_span.get_text(strip=True)
+            artist = re.sub(r"^by\s+", "", artist, flags=re.IGNORECASE).strip()
+
+        title_span = row.select_one("span.theme-song-title")
+        if title_span:
+            song_title = title_span.get_text(strip=True).strip().strip('"').strip()
+        else:
+            content_td = None
+            for td in row.select("td"):
+                if td.get("width") == "84%":
+                    content_td = td
+                    break
+            if not content_td:
+                content_td = row.select_one("td")
+            if not content_td:
+                continue
+            for s in content_td.find_all("span"):
+                s.extract()
+            for hidden in content_td.find_all("input"):
+                hidden.extract()
+            raw = content_td.get_text(strip=True)
+            raw = raw.lstrip(":").strip()
+            m = re.match(r'^"(.+)"', raw)
+            if m:
+                song_title = m.group(1).strip()
+            else:
+                m2 = re.match(r'^(.+?)(?:\s*\(eps.*)?$', raw)
+                song_title = (m2.group(1) if m2 else raw).strip().strip('"').strip()
+
+        if not song_title:
+            continue
+        query = f"{song_title} {artist}".strip()
+        if query:
+            results.append(query)
+    return results
+
+
+def _parse_themes_regex_fallback(soup: BeautifulSoup) -> Tuple[List[str], List[str]]:
     openings: List[str] = []
     endings: List[str] = []
 
     candidates = soup.select("div.theme-songs")
     text_blocks: List[str] = []
     for c in candidates:
+        for script in c.find_all("script"):
+            script.decompose()
         t = c.get_text("\n", strip=True)
         if t:
             text_blocks.append(t)
@@ -67,16 +130,15 @@ def parse_mal_themes_from_soup(soup: BeautifulSoup) -> Tuple[List[str], List[str
                     else:
                         endings.append(query)
 
-    def _dedupe(xs: List[str]) -> List[str]:
-        seen = set()
-        out: List[str] = []
-        for x in xs:
-            k = x.lower()
-            if k in seen:
-                continue
-            seen.add(k)
-            out.append(x)
-        return out
+    return _dedupe(openings), _dedupe(endings)
+
+
+def parse_mal_themes_from_soup(soup: BeautifulSoup) -> Tuple[List[str], List[str]]:
+    openings = _parse_theme_section(soup, "opnening")
+    endings = _parse_theme_section(soup, "ending")
+
+    if not openings and not endings:
+        openings, endings = _parse_themes_regex_fallback(soup)
 
     return _dedupe(openings), _dedupe(endings)
 
@@ -104,138 +166,25 @@ def _normalize_mal_url(url: str) -> str:
     return u
 
 
-def _jikan_get_json(path: str, timeout_s: int, log_cb: Optional[LogCb]) -> dict:
-    base = "https://api.jikan.moe/v4"
-    url = base + path
+_MAL_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, 4):
-        try:
-            if log_cb:
-                log_cb(f"Debug: Jikan GET {url} (attempt {attempt}/3)")
-            r = requests.get(
-                url,
-                timeout=(min(10, timeout_s), timeout_s),
-                headers={"User-Agent": "oped-dl"},
-            )
-            if r.status_code in (429, 500, 502, 503, 504):
-                if log_cb:
-                    log_cb(f"Debug: Jikan HTTP {r.status_code}; retrying")
-                time.sleep(1.0 * attempt)
-                continue
-            r.raise_for_status()
-            js = r.json()
-            if not isinstance(js, dict):
-                raise RuntimeError("Unexpected Jikan response")
-            return js
-        except Exception as e:
-            last_exc = e
-            if attempt < 3:
-                time.sleep(1.0 * attempt)
-            continue
-
-    raise RuntimeError(f"Jikan request failed: {last_exc}")
+_BOT_TITLES = ("just a moment", "attention required", "access denied", "cloudflare")
 
 
-def _jikan_title_and_themes(anime_id: int, timeout_s: int, log_cb: Optional[LogCb]) -> Tuple[str, List[str], List[str], Optional[str]]:
-    a = _jikan_get_json(f"/anime/{anime_id}", timeout_s=timeout_s, log_cb=log_cb)
-    title = ""
-    year = None
-    data = a.get("data") if isinstance(a, dict) else None
-    if isinstance(data, dict):
-        title = str(data.get("title") or "").strip()
-        aired = data.get("aired")
-        if isinstance(aired, dict):
-            from_iso = aired.get("from")
-            if from_iso and isinstance(from_iso, str) and len(from_iso) >= 4:
-                year = from_iso[:4]
-
-    year = _find_first_season_year(anime_id, timeout_s, log_cb, year)
-
-    t = _jikan_get_json(f"/anime/{anime_id}/themes", timeout_s=timeout_s, log_cb=log_cb)
-    td = t.get("data") if isinstance(t, dict) else None
-    openings: List[str] = []
-    endings: List[str] = []
-    if isinstance(td, dict):
-        ops = td.get("openings")
-        eds = td.get("endings")
-        if isinstance(ops, list):
-            openings = [str(x).strip() for x in ops if str(x).strip()]
-        if isinstance(eds, list):
-            endings = [str(x).strip() for x in eds if str(x).strip()]
+def _html_fetch_page(url: str, timeout_s: int, log_cb: Optional[LogCb]) -> BeautifulSoup:
+    url = _normalize_mal_url(url)
 
     if log_cb:
-        log_cb(f"Debug: Jikan title '{title}'")
-        log_cb(f"Debug: Jikan openings {len(openings)}")
-        log_cb(f"Debug: Jikan endings {len(endings)}")
-        if year:
-            log_cb(f"Debug: First season year: {year}")
-
-    return title, openings, endings, year
-
-
-def _find_first_season_year(anime_id: int, timeout_s: int, log_cb: Optional[LogCb], current_year: Optional[str]) -> Optional[str]:
-    visited = set()
-    current_id = anime_id
-
-    while current_id not in visited:
-        visited.add(current_id)
-
-        r = _jikan_get_json(f"/anime/{current_id}/relations", timeout_s=timeout_s, log_cb=log_cb)
-        relations = r.get("data") if isinstance(r, dict) else None
-
-        prequel_id = None
-        if isinstance(relations, list):
-            for rel in relations:
-                rel_dict = rel if isinstance(rel, dict) else {}
-                rel_type = rel_dict.get("relation")
-                if rel_type and "prequel" in rel_type.lower():
-                    entries = rel_dict.get("entry")
-                    if isinstance(entries, list) and entries:
-                        first_entry = entries[0]
-                        if isinstance(first_entry, dict):
-                            mal_url = first_entry.get("url") or ""
-                            prequel_id = _extract_mal_anime_id(mal_url)
-                            if prequel_id:
-                                if log_cb:
-                                    prequel_title = first_entry.get("name", "")
-                                    log_cb(f"Debug: Found prequel: {prequel_title} (id {prequel_id})")
-                                break
-
-        if prequel_id:
-            a = _jikan_get_json(f"/anime/{prequel_id}", timeout_s=timeout_s, log_cb=log_cb)
-            data = a.get("data") if isinstance(a, dict) else None
-            if isinstance(data, dict):
-                aired = data.get("aired")
-                if isinstance(aired, dict):
-                    from_iso = aired.get("from")
-                    if from_iso and isinstance(from_iso, str) and len(from_iso) >= 4:
-                        current_year = from_iso[:4]
-                        if log_cb:
-                            log_cb(f"Debug: Prequel year: {current_year}")
-            current_id = prequel_id
-        else:
-            break
-
-    return current_year
-
-
-def _html_title_and_themes(mal_url: str, timeout_s: int, log_cb: Optional[LogCb]) -> Tuple[str, List[str], List[str]]:
-    url = _normalize_mal_url(mal_url)
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-
-    if log_cb:
-        log_cb(f"Debug: MAL HTML request starting")
+        log_cb("Debug: MAL HTML request starting")
         log_cb(f"Debug: GET {url}")
         log_cb(f"Debug: Timeout {timeout_s}s")
 
     t = (min(10, timeout_s), timeout_s)
-    r = requests.get(url, timeout=t, headers=headers, allow_redirects=True)
+    r = requests.get(url, timeout=t, headers=_MAL_HEADERS, allow_redirects=True)
 
     if log_cb:
         log_cb(f"Debug: HTTP {r.status_code}")
@@ -248,44 +197,138 @@ def _html_title_and_themes(mal_url: str, timeout_s: int, log_cb: Optional[LogCb]
 
     r.raise_for_status()
 
-    text_l = (r.text or "").lower()
-    if "captcha" in text_l or "cloudflare" in text_l or "ddos" in text_l:
-        raise RuntimeError(
-            "MyAnimeList may be blocking automated requests (captcha/bot-check). Try again later or use the API method."
-        )
-
     soup = BeautifulSoup(r.text, "html.parser")
 
-    title = ""
+    page_title = (soup.title.string or "").strip().lower() if soup.title else ""
+    if any(bt in page_title for bt in _BOT_TITLES):
+        raise RuntimeError(
+            "MyAnimeList may be blocking automated requests (captcha/bot-check). Try again later."
+        )
+
+    return soup
+
+
+def _html_extract_title(soup: BeautifulSoup) -> str:
+    og = soup.select_one('meta[property="og:title"]')
+    if og and og.get("content"):
+        return str(og.get("content")).strip()
+
     h1 = soup.select_one("h1.title-name")
     if h1:
-        title = h1.get_text(" ", strip=True)
-    if not title:
-        og = soup.select_one('meta[property="og:title"]')
-        if og and og.get("content"):
-            title = str(og.get("content")).strip()
+        return h1.get_text(" ", strip=True)
 
-    openings, endings = parse_mal_themes_from_soup(soup)
-    return title, openings, endings
+    breadcrumbs = soup.select("div.breadcrumb span[itemprop='name']")
+    if breadcrumbs:
+        return breadcrumbs[-1].get_text(strip=True)
+
+    return ""
+
+
+def _html_extract_year(soup: BeautifulSoup) -> Optional[str]:
+    season_span = soup.select_one("span.information.season a")
+    if season_span:
+        text = season_span.get_text(strip=True)
+        m = re.search(r"\b(19\d{2}|20\d{2})\b", text)
+        if m:
+            return m.group(1)
+
+    for info_div in soup.select("div.spaceit_pad"):
+        text = info_div.get_text(" ", strip=True)
+        if text.startswith("Aired:"):
+            m = re.search(r"\b(19\d{2}|20\d{2})\b", text)
+            if m:
+                return m.group(1)
+
+    return None
+
+
+def _html_find_prequel_url(soup: BeautifulSoup) -> Optional[str]:
+    related = soup.select_one("div.related-entries")
+    if not related:
+        return None
+
+    for entry in related.select("div.entry"):
+        rel_div = entry.select_one("div.relation")
+        if not rel_div:
+            continue
+        rel_text = rel_div.get_text(" ", strip=True).lower()
+        if "prequel" not in rel_text:
+            continue
+        title_div = entry.select_one("div.title a")
+        if title_div and title_div.get("href"):
+            href = str(title_div["href"])
+            if "myanimelist.net/anime/" in href:
+                return href
+
+    return None
+
+
+def _html_find_first_season_year(
+    mal_url: str,
+    timeout_s: int,
+    log_cb: Optional[LogCb],
+    current_year: Optional[str],
+) -> Optional[str]:
+    visited: set = set()
+    current_url = mal_url
+
+    while current_url and current_url not in visited:
+        visited.add(current_url)
+
+        soup = _html_fetch_page(current_url, timeout_s=timeout_s, log_cb=log_cb)
+
+        year = _html_extract_year(soup)
+        if year:
+            current_year = year
+            if log_cb:
+                log_cb(f"Debug: Prequel year: {year}")
+
+        prequel_url = _html_find_prequel_url(soup)
+        if not prequel_url:
+            break
+
+        if log_cb:
+            prequel_id = _extract_mal_anime_id(prequel_url)
+            log_cb(f"Debug: Found prequel: {prequel_url} (id {prequel_id})")
+
+        current_url = prequel_url
+
+    return current_year
 
 
 def scrape_mal_title_and_themes(
     mal_url: str,
     timeout_s: int = 20,
     log_cb: Optional[LogCb] = None,
+    skip_relation_check: bool = False,
 ) -> Tuple[str, List[str], List[str], Optional[str]]:
     anime_id = _extract_mal_anime_id(mal_url)
-    if anime_id:
-        if log_cb:
-            log_cb(f"Debug: MAL anime id {anime_id}")
-        try:
-            return _jikan_title_and_themes(anime_id, timeout_s=timeout_s, log_cb=log_cb)
-        except Exception as e:
-            if log_cb:
-                log_cb(f"Debug: Jikan failed, falling back to HTML: {e}")
+    if log_cb:
+        log_cb(f"Debug: MAL anime id {anime_id}")
+        if skip_relation_check:
+            log_cb("Debug: Skipping prequel year lookup")
 
-    title, openings, endings = _html_title_and_themes(mal_url, timeout_s=timeout_s, log_cb=log_cb)
-    return title, openings, endings, None
+    soup = _html_fetch_page(mal_url, timeout_s=timeout_s, log_cb=log_cb)
+
+    title = _html_extract_title(soup)
+    openings, endings = parse_mal_themes_from_soup(soup)
+    year = _html_extract_year(soup)
+
+    if not skip_relation_check:
+        prequel_url = _html_find_prequel_url(soup)
+        if prequel_url:
+            year = _html_find_first_season_year(
+                prequel_url, timeout_s=timeout_s, log_cb=log_cb, current_year=year
+            )
+
+    if log_cb:
+        log_cb(f"Debug: HTML title '{title}'")
+        log_cb(f"Debug: HTML openings {len(openings)}")
+        log_cb(f"Debug: HTML endings {len(endings)}")
+        if year:
+            log_cb(f"Debug: First season year: {year}")
+
+    return title, openings, endings, year
 
 
 def tvdb_search_url(query: str) -> str:

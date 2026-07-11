@@ -103,6 +103,12 @@ def _entry_score(entry: dict, anime_title: str, jp_tokens: List[str], title: str
     if "topic" in uploader.lower() or "topic" in channel.lower() or "topic" in et.lower():
         score += 120
 
+    if "official" in uploader.lower() or "official" in channel.lower():
+        score += 80
+
+    if "audio" in et.lower():
+        score += 60
+
     if anime_title and anime_title.lower() in hay:
         score += 20
 

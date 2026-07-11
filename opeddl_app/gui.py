@@ -27,6 +27,7 @@ class SettingsDialog(tk.Toplevel):
         self.var_album_artist = tk.StringVar(value=settings.default_album_artist)
         self.var_genre = tk.StringVar(value=settings.default_genre)
         self.var_debug = tk.BooleanVar(value=bool(settings.debug))
+        self.var_skip_relation_check = tk.BooleanVar(value=bool(settings.skip_relation_check))
 
         frm = ttk.Frame(self, padding=10)
         frm.grid(row=0, column=0, sticky="nsew")
@@ -62,6 +63,9 @@ class SettingsDialog(tk.Toplevel):
         ttk.Checkbutton(frm, text="Debug mode (more logging)", variable=self.var_debug).grid(row=r, column=0, columnspan=2, sticky="w")
         r += 1
 
+        ttk.Checkbutton(frm, text="Skip prequel year lookup (faster)", variable=self.var_skip_relation_check).grid(row=r, column=0, columnspan=2, sticky="w")
+        r += 1
+
         btns = ttk.Frame(frm)
         btns.grid(row=r, column=0, columnspan=3, sticky="e", pady=(10, 0))
         ttk.Button(btns, text="Cancel", command=self._cancel).grid(row=0, column=0, padx=(0, 8))
@@ -84,6 +88,7 @@ class SettingsDialog(tk.Toplevel):
             default_album_artist=self.var_album_artist.get().strip() or "Openings and Endings",
             default_genre=self.var_genre.get().strip() or "Anime",
             debug=bool(self.var_debug.get()),
+            skip_relation_check=bool(self.var_skip_relation_check.get()),
         )
         self.result = s
         self.destroy()
@@ -439,7 +444,8 @@ class App(tk.Tk):
                     if debug:
                         self.worker_to_ui.put(("log", m))
 
-                title, openings, endings, year = scrape_mal_title_and_themes(url, timeout_s=20, log_cb=mal_log if debug else None)
+                skip_rel = bool(getattr(self.settings, "skip_relation_check", False))
+                title, openings, endings, year = scrape_mal_title_and_themes(url, timeout_s=20, log_cb=mal_log if debug else None, skip_relation_check=skip_rel)
                 dt_ms = int((time.perf_counter() - t0) * 1000)
                 if debug:
                     self.worker_to_ui.put(("log", f"Debug: MAL scrape finished in {dt_ms}ms"))

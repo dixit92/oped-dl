@@ -14,6 +14,7 @@ class AppSettings:
     default_album_artist: str = "Openings and Endings"
     default_genre: str = "Anime"
     debug: bool = False
+    skip_relation_check: bool = False
 
 
 def _settings_path() -> Path:
@@ -41,6 +42,9 @@ def load_settings() -> AppSettings:
 
         if "debug" in filtered:
             filtered["debug"] = bool(filtered["debug"])
+
+        if "skip_relation_check" in filtered:
+            filtered["skip_relation_check"] = bool(filtered["skip_relation_check"])
 
         return AppSettings(**filtered)
     except Exception:
